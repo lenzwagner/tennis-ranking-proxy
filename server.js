@@ -41,14 +41,16 @@ async function scrapeRankings(tour) {
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage'
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--single-process'
         ]
       });
     } catch (e) {
       // Fallback to regular puppeteer
       browser = await puppeteer.launch({
         headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
       });
     }
 
@@ -67,8 +69,8 @@ async function scrapeRankings(tour) {
     });
 
     const url = tour === 'ATP'
-      ? 'https://live-tennis.eu/en/atp-live-ranking'
-      : 'https://live-tennis.eu/en/wta-live-ranking';
+      ? 'https://live-tennis.eu/de/atp-weltrangliste-live'
+      : 'https://live-tennis.eu/de/wta-weltrangliste-live';
 
     console.log(`Loading ${url}...`);
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
