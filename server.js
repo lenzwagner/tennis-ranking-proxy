@@ -49,6 +49,35 @@ async function scrapeOfficialRankings(tour) {
   return results;
 }
 
+// ── ELO Ratings (tennisabstract.com) ─────────────────────────────────────────
+
+async function scrapeElo(tour) {
+  const url = tour === 'ATP'
+    ? 'https://tennisabstract.com/reports/atp_elo_ratings.html'
+    : 'https://tennisabstract.com/reports/wta_elo_ratings.html';
+
+  const res = await axios.get(url, { headers: HEADERS });
+  const $ = cheerio.load(res.data);
+  const results = [];
+
+  $('table tbody tr').each((_, row) => {
+    const cells = $(row).find('td');
+    if (cells.length < 11) return;
+    const c = (i) => $(cells[i]).text().trim().replace(/ /g, '').trim();
+    const rank = parseInt(c(0));
+    if (isNaN(rank)) return;
+    const name  = c(1).replace(/ /g, ' ').trim();
+    const elo   = parseFloat(c(3)) || null;
+    // hElo=col6, cElo=col8, gElo=col10
+    const hElo  = parseFloat(c(6)) || null;
+    const cElo  = parseFloat(c(8)) || null;
+    const gElo  = parseFloat(c(10)) || null;
+    results.push({ rank, name, elo, hElo, cElo, gElo, tour });
+  });
+
+  return results;
+}
+
 // ── Live Rankings (live-tennis.eu) ────────────────────────────────────────────
 
 async function scrapeLiveRankings(tour) {
@@ -108,17 +137,23 @@ function cached(key, ttl, fn) {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+const CACHE_DURATION_ELO = 7 * 24 * 60 * 60 * 1000; // 1 week
+
 app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // Official rankings
 app.get('/api/rankings/atp',      cached('atp',      CACHE_DURATION_OFFICIAL, () => scrapeOfficialRankings('ATP')));
 app.get('/api/rankings/wta',      cached('wta',      CACHE_DURATION_OFFICIAL, () => scrapeOfficialRankings('WTA')));
 
-// Live rankings (updates during tournaments)
+// Live rankings
 app.get('/api/rankings/atp/live', cached('atp-live', CACHE_DURATION_LIVE,     () => scrapeLiveRankings('ATP')));
 app.get('/api/rankings/wta/live', cached('wta-live', CACHE_DURATION_LIVE,     () => scrapeLiveRankings('WTA')));
 
-// Player lookup by name
+// ELO ratings (weekly cache)
+app.get('/api/elo/atp',           cached('elo-atp',  CACHE_DURATION_ELO,      () => scrapeElo('ATP')));
+app.get('/api/elo/wta',           cached('elo-wta',  CACHE_DURATION_ELO,      () => scrapeElo('WTA')));
+
+// Player lookup
 app.get('/api/player/:tour/:name', async (req, res) => {
   try {
     const { tour, name } = req.params;
@@ -135,14 +170,16 @@ app.get('/api/player/:tour/:name', async (req, res) => {
   }
 });
 
-// Sync all: returns both official + live for ATP and WTA in one call
+// Sync all: rankings + ELO in one call (for the "Jetzt synchronisieren" button)
 app.get('/api/sync/all', async (req, res) => {
   try {
-    const [atpOfficial, wtaOfficial, atpLive, wtaLive] = await Promise.allSettled([
+    const [atpOfficial, wtaOfficial, atpLive, wtaLive, atpElo, wtaElo] = await Promise.allSettled([
       scrapeOfficialRankings('ATP'),
       scrapeOfficialRankings('WTA'),
       scrapeLiveRankings('ATP'),
       scrapeLiveRankings('WTA'),
+      scrapeElo('ATP'),
+      scrapeElo('WTA'),
     ]);
     res.json({
       success: true,
@@ -151,6 +188,8 @@ app.get('/api/sync/all', async (req, res) => {
       wta:     wtaOfficial.status === 'fulfilled' ? wtaOfficial.value : [],
       atpLive: atpLive.status === 'fulfilled'     ? atpLive.value     : [],
       wtaLive: wtaLive.status === 'fulfilled'     ? wtaLive.value     : [],
+      atpElo:  atpElo.status  === 'fulfilled'     ? atpElo.value      : [],
+      wtaElo:  wtaElo.status  === 'fulfilled'     ? wtaElo.value      : [],
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
