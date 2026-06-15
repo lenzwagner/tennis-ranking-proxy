@@ -3,10 +3,12 @@ services:
     name: tennis-ranking-proxy
     runtime: node
     plan: free
-    buildCommand: npm install && npx puppeteer browsers install chrome
+    buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 3000
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/.cache/puppeteer
