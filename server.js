@@ -56,8 +56,15 @@ async function scrapeLiveRankings(tour) {
     ? 'https://live-tennis.eu/de/atp-weltrangliste-live'
     : 'https://live-tennis.eu/de/wta-weltrangliste-live';
 
-  const res = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-  const $ = cheerio.load(res.data);
+  let html;
+  try {
+    const res = await axios.get(url, { headers: HEADERS, timeout: 15000 });
+    html = res.data;
+  } catch (e) {
+    console.log(`live-tennis.eu blocked (${e.response?.status}), falling back to official`);
+    return scrapeOfficialRankings(tour);
+  }
+  const $ = cheerio.load(html);
   const results = [];
 
   // live-tennis.eu table structure
