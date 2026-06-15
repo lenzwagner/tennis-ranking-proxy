@@ -30,28 +30,34 @@ async function scrapeRankings(tour) {
   try {
     // Try to reuse browser instance
     let browser;
+    const launchArgs = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process'
+    ];
+
+    // Find Chrome executable — check common Render/Linux paths first
+    const { execSync } = require('child_process');
+    let executablePath;
+    const candidates = [
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+    ];
+    for (const c of candidates) {
+      try { execSync(`test -f ${c}`); executablePath = c; break; } catch {}
+    }
+
     try {
-      // For serverless: use puppeteer-extra with stealth plugin
       const puppeteerExtra = require('puppeteer-extra');
       const StealthPlugin = require('puppeteer-extra-plugin-stealth');
       puppeteerExtra.use(StealthPlugin());
-
-      browser = await puppeteerExtra.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--single-process'
-        ]
-      });
+      browser = await puppeteerExtra.launch({ headless: 'new', args: launchArgs, ...(executablePath ? { executablePath } : {}) });
     } catch (e) {
-      // Fallback to regular puppeteer
-      browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
-      });
+      browser = await puppeteer.launch({ headless: 'new', args: launchArgs, ...(executablePath ? { executablePath } : {}) });
     }
 
     const page = await browser.newPage();
