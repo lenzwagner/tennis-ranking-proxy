@@ -1,5 +1,5 @@
 const express = require('express');
-const fetch = require('node-fetch');
+const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
 
@@ -21,8 +21,8 @@ async function scrapeRankings(tour) {
     ? 'https://www.tennisexplorer.com/ranking/atp-men/'
     : 'https://www.tennisexplorer.com/ranking/wta-women/';
 
-  const res = await fetch(url, { headers: HEADERS });
-  const html = await res.text();
+  const res = await axios.get(url, { headers: HEADERS });
+  const html = res.data;
   const $ = cheerio.load(html);
 
   const results = [];

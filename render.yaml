@@ -2,6 +2,7 @@ services:
   - type: web
     name: tennis-ranking-proxy
     runtime: node
+    nodeVersion: 20.11.0
     plan: free
     buildCommand: npm install
     startCommand: node server.js
