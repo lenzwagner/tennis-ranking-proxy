@@ -23,6 +23,27 @@ const HEADERS = {
   'Sec-Fetch-Site': 'none',
 };
 
+// ── HTML fetch with reader-proxy fallback ─────────────────────────────────────
+// Some sources (e.g. tennisabstract.com) return 403 to datacenter IPs like
+// Render's. When a direct request is blocked, retry through Jina's reader
+// (r.jina.ai), which fetches the page from a non-blocked IP and—when asked with
+// X-Return-Format: html—returns the raw HTML so cheerio parsing still works.
+async function fetchHtml(url, { timeout = 20000 } = {}) {
+  try {
+    const res = await axios.get(url, { headers: HEADERS, timeout });
+    return res.data;
+  } catch (e) {
+    const status = e.response?.status;
+    if (status !== 403 && status !== 429 && e.code !== 'ECONNABORTED') throw e;
+    console.log(`Direct fetch of ${url} blocked (${status || e.code}); retrying via reader proxy`);
+    const readerRes = await axios.get(`https://r.jina.ai/${url}`, {
+      headers: { ...HEADERS, 'X-Return-Format': 'html' },
+      timeout: timeout + 15000,
+    });
+    return readerRes.data;
+  }
+}
+
 // ── Official Rankings (tennisexplorer.com) ────────────────────────────────────
 
 async function scrapeOfficialRankings(tour) {
@@ -56,8 +77,8 @@ async function scrapeElo(tour) {
     ? 'https://tennisabstract.com/reports/atp_elo_ratings.html'
     : 'https://tennisabstract.com/reports/wta_elo_ratings.html';
 
-  const res = await axios.get(url, { headers: HEADERS });
-  const $ = cheerio.load(res.data);
+  const html = await fetchHtml(url);
+  const $ = cheerio.load(html);
   const results = [];
 
   $('table tbody tr').each((_, row) => {
@@ -66,13 +87,20 @@ async function scrapeElo(tour) {
     const c = (i) => $(cells[i]).text().trim().replace(/ /g, '').trim();
     const rank = parseInt(c(0));
     if (isNaN(rank)) return;
-    const name  = c(1).replace(/ /g, ' ').trim();
-    const elo   = parseFloat(c(3)) || null;
+    // Keep the name's spaces; the source separates first/last name with a
+    // non-breaking space, and c() strips it (gluing "Jannik Sinner" into
+    // "JannikSinner"). Pull the raw cell text and collapse whitespace instead.
+    const name  = $(cells[1]).text().replace(/\s+/g, ' ').trim();
+    // Round to integers: the app's EloPlayerDto expects Int, and Moshi rejects
+    // decimals for an Int field.
+    const num = (i) => { const v = parseFloat(c(i)); return Number.isFinite(v) ? Math.round(v) : null; };
+    const elo   = num(3);
     // hElo=col6, cElo=col8, gElo=col10
-    const hElo  = parseFloat(c(6)) || null;
-    const cElo  = parseFloat(c(8)) || null;
-    const gElo  = parseFloat(c(10)) || null;
-    results.push({ rank, name, elo, hElo, cElo, gElo, tour });
+    const eloHard  = num(6);
+    const eloClay  = num(8);
+    const eloGrass = num(10);
+    // Field names match the app's EloPlayerDto (eloHard/eloClay/eloGrass).
+    results.push({ rank, name, elo, eloHard, eloClay, eloGrass, tour });
   });
 
   return results;
@@ -87,29 +115,38 @@ async function scrapeLiveRankings(tour) {
 
   let html;
   try {
-    const res = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-    html = res.data;
+    // fetchHtml retries through the reader proxy when live-tennis.eu blocks the
+    // datacenter IP (Cloudflare 403). The full live ranking (~1000+ players) is
+    // on a single page, so no pagination is needed.
+    html = await fetchHtml(url, { timeout: 15000 });
   } catch (e) {
-    console.log(`live-tennis.eu blocked (${e.response?.status}), falling back to official`);
+    console.log(`live-tennis.eu unreachable (${e.response?.status || e.message}), falling back to official`);
     return scrapeOfficialRankings(tour);
   }
   const $ = cheerio.load(html);
   const results = [];
+  const seen = new Set();
 
-  // live-tennis.eu table structure
-  $('table tbody tr').each((_, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 3) return;
-    const rank = parseInt($(cells[0]).text().trim());
-    if (isNaN(rank)) return;
-    const name = $(cells[1]).text().trim();
-    const points = parseInt($(cells[2]).text().trim().replace(/[.,\s]/g, '')) || 0;
-    if (name.length > 1) results.push({ rank, name, points, tour, type: 'live' });
+  // live-tennis.eu structure: rank in td.rk, name in td.pn, points is the large
+  // integer cell after the country code (other numeric cells are age/movement).
+  $('table tr').each((_, row) => {
+    const $row = $(row);
+    const rank = parseInt($row.find('td.rk').first().text().trim());
+    const name = $row.find('td.pn').first().text().replace(/\s+/g, ' ').trim();
+    if (isNaN(rank) || name.length < 2) return;
+    if (seen.has(name)) return; // the top row is repeated as a sticky header
+    seen.add(name);
+    let points = 0;
+    $row.find('td').each((_, cell) => {
+      const v = parseInt($(cell).text().trim().replace(/[.,\s]/g, ''));
+      if (!isNaN(v) && v > points) points = v; // points dwarf age/movement values
+    });
+    results.push({ rank, name, points, tour, type: 'live' });
   });
 
   // If live-tennis.eu was blocked (Cloudflare), fall back to official
   if (results.length === 0) {
-    console.log(`live-tennis.eu blocked for ${tour}, falling back to official rankings`);
+    console.log(`live-tennis.eu returned no rows for ${tour}, falling back to official rankings`);
     return scrapeOfficialRankings(tour);
   }
 
