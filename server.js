@@ -123,26 +123,29 @@ async function scrapeLiveRankings(tour) {
     console.log(`live-tennis.eu unreachable (${e.response?.status || e.message}), falling back to official`);
     return scrapeOfficialRankings(tour);
   }
-  const $ = cheerio.load(html);
   const results = [];
   const seen = new Set();
 
-  // live-tennis.eu structure: rank in td.rk, name in td.pn, points is the large
-  // integer cell after the country code (other numeric cells are age/movement).
-  $('table tr').each((_, row) => {
-    const $row = $(row);
-    const rank = parseInt($row.find('td.rk').first().text().trim());
-    const name = $row.find('td.pn').first().text().replace(/\s+/g, ' ').trim();
-    if (isNaN(rank) || name.length < 2) return;
-    if (seen.has(name)) return; // the top row is repeated as a sticky header
+  // Parse row-by-row on the raw HTML rather than via cheerio's DOM: the reader
+  // proxy returns the table with broken <tr> nesting, so cheerio collapses every
+  // row into one giant <tr>. Splitting on <tr> keeps the rows intact.
+  // Per row: rank=td.rk, name=td.pn, and points is the <td> right after the
+  // country code (a td.sm holding 2-3 letters; the other td.sm is the age).
+  const stripTags = (s) => s.replace(/<[^>]+>/g, '').replace(/&#160;|&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  const rowChunks = html.split(/<tr[\s>]/i);
+  for (const chunk of rowChunks) {
+    const rankM = chunk.match(/class="rk"[^>]*>\s*(\d+)/i);
+    const nameM = chunk.match(/class="pn"[^>]*>([\s\S]*?)<\/td>/i);
+    if (!rankM || !nameM) continue;
+    const rank = parseInt(rankM[1]);
+    const name = stripTags(nameM[1]);
+    if (isNaN(rank) || name.length < 2) continue;
+    if (seen.has(name)) continue; // the top row is repeated as a sticky header
     seen.add(name);
-    let points = 0;
-    $row.find('td').each((_, cell) => {
-      const v = parseInt($(cell).text().trim().replace(/[.,\s]/g, ''));
-      if (!isNaN(v) && v > points) points = v; // points dwarf age/movement values
-    });
+    const ptsM = chunk.match(/class="sm"[^>]*>\s*[A-Za-z]{2,3}\s*<\/td>\s*<td[^>]*>([\d.,\s]+)<\/td>/i);
+    const points = ptsM ? parseInt(ptsM[1].replace(/[.,\s]/g, '')) || 0 : 0;
     results.push({ rank, name, points, tour, type: 'live' });
-  });
+  }
 
   // If live-tennis.eu was blocked (Cloudflare), fall back to official
   if (results.length === 0) {
