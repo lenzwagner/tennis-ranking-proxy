@@ -385,16 +385,11 @@ async function scrapeH2H(matchId) {
 
     const player1Name = row1.find('td.t-name').text().trim();
     const player1Sets = parseInt(row1.find('td.result').text().trim()) || 0;
-    // Extract only the main set score (first text node), ignoring <sup> tiebreak digits
-    const setScore = (td) => {
-      const main = $(td).contents().filter((_, n) => n.type === 'text').text().trim();
-      return main || null;
-    };
-    const p1Scores = row1.find('td.score').map((_, s) => setScore(s)).toArray().filter(Boolean);
+    const p1Scores = row1.find('td.score').map((_, s) => $(s).text().trim().replace(/\D+/g, '') || null).toArray().filter(Boolean);
 
     const player2Name = row2 ? row2.find('td.t-name').text().trim() : '';
     const player2Sets = row2 ? parseInt(row2.find('td.result').text().trim()) || 0 : 0;
-    const p2Scores = row2 ? row2.find('td.score').map((_, s) => setScore(s)).toArray().filter(Boolean) : [];
+    const p2Scores = row2 ? row2.find('td.score').map((_, s) => $(s).text().trim().replace(/\D+/g, '') || null).toArray().filter(Boolean) : [];
 
     if (!p1Name && player1Name) p1Name = player1Name;
     if (!p2Name && player2Name) p2Name = player2Name;
