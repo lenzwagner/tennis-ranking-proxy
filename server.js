@@ -144,10 +144,12 @@ async function scrapeLiveRankings(tour) {
     seen.add(name);
     const ptsM = chunk.match(/class="sm"[^>]*>\s*[A-Za-z]{2,3}\s*<\/td>\s*<td[^>]*>([\d.,\s]+)<\/td>/i);
     const points = ptsM ? parseInt(ptsM[1].replace(/[.,\s]/g, '')) || 0 : 0;
-    // Career high: <td class="chtd"><b class="ich">N</b></td> for a different rank,
-    // or <b class="chigh">HP</b> meaning current rank IS the career high.
-    const chHighM = chunk.match(/class="chtd"[^>]*>\s*<b[^>]*class="ich"[^>]*>(\d+)<\/b>/i);
-    const chHighHP = /class="chigh"[^>]*>\s*HP\s*<\/b>/i.test(chunk);
+    // Career high column (class="chtd"). Subclasses:
+    //   fch/nch/ich = numeric career best rank
+    //   chigh = "HP" (current rank IS career best)
+    //   nwch  = "NHP" (new career best, same meaning as HP)
+    const chHighM = chunk.match(/class="chtd"[^>]*>\s*<b[^>]*>(\d+)<\/b>/i);
+    const chHighHP = /class="chtd"[^>]*>\s*<b[^>]*>[NH]*HP[^<]*<\/b>/i.test(chunk);
     const careerHighRank = chHighM ? parseInt(chHighM[1]) : (chHighHP ? rank : null);
     results.push({ rank, name, points, tour, type: 'live', careerHighRank });
   }
