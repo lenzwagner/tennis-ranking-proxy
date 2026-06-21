@@ -182,9 +182,42 @@ function cached(key, ttl, fn) {
   };
 }
 
+// ── Prize Money ───────────────────────────────────────────────────────────────
+
+async function scrapePrizeMoney(tour) {
+  const slug = tour === 'ATP' ? 'atp-ytd-prize-money-ranking' : 'wta-ytd-prize-money-ranking';
+  const url = `https://live-tennis.eu/en/${slug}`;
+  const html = await fetchHtml(url);
+  const $ = cheerio.load(html);
+
+  const results = [];
+  $('#u868').find('tbody tr').each((_, row) => {
+    const cells = $(row).find('td');
+    const rank = parseInt(cells.eq(0).text().trim());
+    const name = cells.eq(2).text().trim();
+    const prizeRaw = cells.eq(5).text().trim(); // e.g. "6.85M" or "1.23M"
+
+    if (!rank || !name || !prizeRaw) return;
+
+    // Parse to integer USD
+    let prizeUsd = null;
+    const mMatch = prizeRaw.match(/^([\d.]+)M$/i);
+    const kMatch = prizeRaw.match(/^([\d.]+)k$/i);
+    const numMatch = prizeRaw.match(/^[\d,]+$/);
+    if (mMatch) prizeUsd = Math.round(parseFloat(mMatch[1]) * 1_000_000);
+    else if (kMatch) prizeUsd = Math.round(parseFloat(kMatch[1]) * 1_000);
+    else if (numMatch) prizeUsd = parseInt(prizeRaw.replace(/,/g, ''));
+
+    results.push({ rank, name, prizeRaw, prizeUsd, tour: tour.toLowerCase() });
+  });
+
+  return results;
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 const CACHE_DURATION_ELO = 7 * 24 * 60 * 60 * 1000; // 1 week
+const CACHE_DURATION_PRIZE = 6 * 60 * 60 * 1000; // 6h
 
 app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
@@ -199,6 +232,10 @@ app.get('/api/rankings/wta/live', cached('wta-live', CACHE_DURATION_LIVE,     ()
 // ELO ratings (weekly cache)
 app.get('/api/elo/atp',           cached('elo-atp',  CACHE_DURATION_ELO,      () => scrapeElo('ATP')));
 app.get('/api/elo/wta',           cached('elo-wta',  CACHE_DURATION_ELO,      () => scrapeElo('WTA')));
+
+// Prize money YTD
+app.get('/api/prize/atp',         cached('prize-atp', CACHE_DURATION_PRIZE,    () => scrapePrizeMoney('ATP')));
+app.get('/api/prize/wta',         cached('prize-wta', CACHE_DURATION_PRIZE,    () => scrapePrizeMoney('WTA')));
 
 // Player lookup
 app.get('/api/player/:tour/:name', async (req, res) => {
@@ -404,4 +441,6 @@ app.listen(PORT, () => {
   console.log('  GET /api/player/atp/Zverev');
   console.log('  GET /api/sync/all');
   console.log('  GET /api/h2h?p1=Taylor+Fritz&p2=Frances+Tiafoe&date=2026-06-20&tour=atp');
+  console.log('  GET /api/prize/atp');
+  console.log('  GET /api/prize/wta');
 });
