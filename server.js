@@ -243,6 +243,157 @@ app.get('/api/sync/all', async (req, res) => {
   }
 });
 
+// H2H lookup
+// GET /api/h2h?p1=Taylor+Fritz&p2=Frances+Tiafoe&date=2026-06-20&tour=atp
+const h2hCache = new Map();
+const H2H_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24h
+
+function lastNameOf(fullName) {
+  // "Taylor Fritz" → "Fritz", "Stefanos Tsitsipas" → "Tsitsipas"
+  const parts = fullName.trim().split(/\s+/);
+  return parts[parts.length - 1].toLowerCase();
+}
+
+async function findMatchDetailId(p1LastName, p2LastName, dateStr, tourType) {
+  // Try the given date and adjacent days (handles scheduled/upcoming matches)
+  const type = tourType.toLowerCase() === 'wta' ? 'wta-women' : 'atp-men';
+  const baseDate = new Date(dateStr + 'T12:00:00Z');
+
+  for (const dayOffset of [0, -1, 1]) {
+    const d = new Date(baseDate);
+    d.setUTCDate(d.getUTCDate() + dayOffset);
+    const year = d.getUTCFullYear();
+    const month = d.getUTCMonth() + 1;
+    const day = d.getUTCDate();
+
+    for (const pageType of ['results', 'schedule']) {
+      const url = `https://www.tennisexplorer.com/${pageType}/?type=${type}&year=${year}&month=${month}&day=${day}`;
+      let html;
+      try { html = await fetchHtml(url); } catch { continue; }
+      const $ = cheerio.load(html);
+
+      // Search main match table (finished/in-progress)
+      for (const primaryRow of $('tr.fRow').toArray()) {
+        const row1 = $(primaryRow);
+        const rowId = row1.attr('id');
+        const row2 = rowId ? $(`#${rowId}b`) : $();
+        const name1 = row1.find('td.t-name a').first().text().trim().toLowerCase();
+        const name2 = row2.find('td.t-name a').first().text().trim().toLowerCase();
+        if ([name1, name2].some(n => n.startsWith(p1LastName)) &&
+            [name1, name2].some(n => n.startsWith(p2LastName))) {
+          const link = row1.find('a[href*="match-detail"]').attr('href')
+            || row2.find('a[href*="match-detail"]').attr('href');
+          const m = link?.match(/id=(\d+)/);
+          if (m) return m[1];
+        }
+      }
+
+      // Search "interesting matches" sidebar (includes scheduled matches)
+      let sidebarId = null;
+      $('td.game a[href*="match-detail"]').each((_, el) => {
+        if (sidebarId) return;
+        const text = $(el).text().toLowerCase();
+        if (text.includes(p1LastName) && text.includes(p2LastName)) {
+          const m = $(el).attr('href')?.match(/id=(\d+)/);
+          if (m) sidebarId = m[1];
+        }
+      });
+      if (sidebarId) return sidebarId;
+    }
+  }
+  return null;
+}
+
+async function scrapeH2H(matchId) {
+  const url = `https://www.tennisexplorer.com/match-detail/?id=${matchId}`;
+  const html = await fetchHtml(url);
+  const $ = cheerio.load(html);
+
+  // Overall H2H score from heading: "Head-to-head: 7 - 2"
+  const headingText = $('h2.bg').filter((_, el) => $(el).text().includes('Head-to-head')).first().text();
+  const overallMatch = headingText.match(/Head-to-head:\s*(\d+)\s*-\s*(\d+)/i);
+  const overallP1 = overallMatch ? parseInt(overallMatch[1]) : 0;
+  const overallP2 = overallMatch ? parseInt(overallMatch[2]) : 0;
+
+  // Find the H2H table by its heading
+  const h2hHeading = $('h2.bg').filter((_, el) => $(el).text().includes('Head-to-head')).first();
+  const h2hTable = h2hHeading.next().find('table.result').first();
+
+  let p1Name = null, p2Name = null;
+  const matches = [];
+
+  const tbodyRows = h2hTable.find('tbody tr').toArray();
+  let i = 0;
+  while (i < tbodyRows.length) {
+    const row1 = $(tbodyRows[i]);
+    const row2 = tbodyRows[i + 1] ? $(tbodyRows[i + 1]) : null;
+
+    const year = row1.find('td.annual').text().trim() || '';
+    const tournament = row1.find('td.tl a').text().trim() || '';
+    const surface = row1.find('td.sColorLong span').attr('title') || '';
+    const round = row1.find('td.round').text().trim() || '';
+
+    const player1Name = row1.find('td.t-name').text().trim();
+    const player1Sets = parseInt(row1.find('td.result').text().trim()) || 0;
+    const p1Scores = row1.find('td.score').map((_, s) => $(s).text().trim().replace(/\D+/g, '') || null).toArray().filter(Boolean);
+
+    const player2Name = row2 ? row2.find('td.t-name').text().trim() : '';
+    const player2Sets = row2 ? parseInt(row2.find('td.result').text().trim()) || 0 : 0;
+    const p2Scores = row2 ? row2.find('td.score').map((_, s) => $(s).text().trim().replace(/\D+/g, '') || null).toArray().filter(Boolean) : [];
+
+    if (!p1Name && player1Name) p1Name = player1Name;
+    if (!p2Name && player2Name) p2Name = player2Name;
+
+    if (year || tournament) {
+      matches.push({
+        year: year || null,
+        tournament,
+        surface,
+        round,
+        winner: player1Sets > player2Sets ? 'p1' : 'p2',
+        player1: { name: player1Name, sets: player1Sets, scores: p1Scores },
+        player2: { name: player2Name, sets: player2Sets, scores: p2Scores },
+      });
+    }
+    i += 2;
+  }
+
+  return {
+    overall: { p1: overallP1, p2: overallP2 },
+    player1: p1Name,
+    player2: p2Name,
+    matches,
+  };
+}
+
+app.get('/api/h2h', async (req, res) => {
+  try {
+    const { p1, p2, date, tour } = req.query;
+    if (!p1 || !p2 || !date) {
+      return res.status(400).json({ success: false, error: 'p1, p2, date required' });
+    }
+    const cacheKey = `h2h:${p1}:${p2}:${date}`;
+    const cached = h2hCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < H2H_CACHE_DURATION) {
+      return res.json({ success: true, data: cached.data });
+    }
+
+    const p1Last = lastNameOf(p1);
+    const p2Last = lastNameOf(p2);
+    const matchId = await findMatchDetailId(p1Last, p2Last, date, tour || 'atp');
+    if (!matchId) {
+      return res.status(404).json({ success: false, error: `Match not found for ${p1} vs ${p2} on ${date}` });
+    }
+
+    const data = await scrapeH2H(matchId);
+    h2hCache.set(cacheKey, { ts: Date.now(), data });
+    res.json({ success: true, data });
+  } catch (e) {
+    console.error('H2H error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Tennis Ranking Proxy on port ${PORT}`);
@@ -252,4 +403,5 @@ app.listen(PORT, () => {
   console.log('  GET /api/rankings/wta/live');
   console.log('  GET /api/player/atp/Zverev');
   console.log('  GET /api/sync/all');
+  console.log('  GET /api/h2h?p1=Taylor+Fritz&p2=Frances+Tiafoe&date=2026-06-20&tour=atp');
 });
