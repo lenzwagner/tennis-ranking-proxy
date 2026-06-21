@@ -28,7 +28,7 @@ const HEADERS = {
 // Render's. When a direct request is blocked, retry through Jina's reader
 // (r.jina.ai), which fetches the page from a non-blocked IP and—when asked with
 // X-Return-Format: html—returns the raw HTML so cheerio parsing still works.
-async function fetchHtml(url, { timeout = 20000 } = {}) {
+async function fetchHtml(url, { timeout = 20000, jinaExtraMs = 15000 } = {}) {
   try {
     const res = await axios.get(url, { headers: HEADERS, timeout });
     return res.data;
@@ -38,7 +38,7 @@ async function fetchHtml(url, { timeout = 20000 } = {}) {
     console.log(`Direct fetch of ${url} blocked (${status || e.code}); retrying via reader proxy`);
     const readerRes = await axios.get(`https://r.jina.ai/${url}`, {
       headers: { ...HEADERS, 'X-Return-Format': 'html' },
-      timeout: timeout + 15000,
+      timeout: timeout + jinaExtraMs,
     });
     return readerRes.data;
   }
@@ -291,54 +291,67 @@ function lastNameOf(fullName) {
   return parts[parts.length - 1].toLowerCase();
 }
 
+// Search a single tennisexplorer page for a match between p1/p2; returns matchId or null
+async function searchPageForMatch(url, p1LastName, p2LastName) {
+  let html;
+  try {
+    html = await fetchHtml(url, { timeout: 8000, jinaExtraMs: 10000 });
+  } catch {
+    return null;
+  }
+  const $ = cheerio.load(html);
+
+  // Main match table rows
+  for (const primaryRow of $('tr.fRow').toArray()) {
+    const row1 = $(primaryRow);
+    const rowId = row1.attr('id');
+    const row2 = rowId ? $(`#${rowId}b`) : $();
+    const name1 = row1.find('td.t-name a').first().text().trim().toLowerCase();
+    const name2 = row2.find('td.t-name a').first().text().trim().toLowerCase();
+    if ([name1, name2].some(n => n.startsWith(p1LastName)) &&
+        [name1, name2].some(n => n.startsWith(p2LastName))) {
+      const link = row1.find('a[href*="match-detail"]').attr('href')
+        || row2.find('a[href*="match-detail"]').attr('href');
+      const m = link?.match(/id=(\d+)/);
+      if (m) return m[1];
+    }
+  }
+
+  // Sidebar "interesting matches"
+  let sidebarId = null;
+  $('td.game a[href*="match-detail"]').each((_, el) => {
+    if (sidebarId) return;
+    const text = $(el).text().toLowerCase();
+    if (text.includes(p1LastName) && text.includes(p2LastName)) {
+      const m = $(el).attr('href')?.match(/id=(\d+)/);
+      if (m) sidebarId = m[1];
+    }
+  });
+  return sidebarId;
+}
+
 async function findMatchDetailId(p1LastName, p2LastName, dateStr, tourType) {
-  // Try the given date and adjacent days (handles scheduled/upcoming matches)
   const type = tourType.toLowerCase() === 'wta' ? 'wta-women' : 'atp-men';
   const baseDate = new Date(dateStr + 'T12:00:00Z');
 
+  // Build all 6 URLs (3 days × 2 page types) and fetch ALL in parallel.
+  // Return the first non-null result; total time = slowest single request (~18s max).
+  const urls = [];
   for (const dayOffset of [0, -1, 1]) {
     const d = new Date(baseDate);
     d.setUTCDate(d.getUTCDate() + dayOffset);
     const year = d.getUTCFullYear();
     const month = d.getUTCMonth() + 1;
     const day = d.getUTCDate();
-
-    for (const pageType of ['results', 'schedule']) {
-      const url = `https://www.tennisexplorer.com/${pageType}/?type=${type}&year=${year}&month=${month}&day=${day}`;
-      let html;
-      try { html = await fetchHtml(url); } catch { continue; }
-      const $ = cheerio.load(html);
-
-      // Search main match table (finished/in-progress)
-      for (const primaryRow of $('tr.fRow').toArray()) {
-        const row1 = $(primaryRow);
-        const rowId = row1.attr('id');
-        const row2 = rowId ? $(`#${rowId}b`) : $();
-        const name1 = row1.find('td.t-name a').first().text().trim().toLowerCase();
-        const name2 = row2.find('td.t-name a').first().text().trim().toLowerCase();
-        if ([name1, name2].some(n => n.startsWith(p1LastName)) &&
-            [name1, name2].some(n => n.startsWith(p2LastName))) {
-          const link = row1.find('a[href*="match-detail"]').attr('href')
-            || row2.find('a[href*="match-detail"]').attr('href');
-          const m = link?.match(/id=(\d+)/);
-          if (m) return m[1];
-        }
-      }
-
-      // Search "interesting matches" sidebar (includes scheduled matches)
-      let sidebarId = null;
-      $('td.game a[href*="match-detail"]').each((_, el) => {
-        if (sidebarId) return;
-        const text = $(el).text().toLowerCase();
-        if (text.includes(p1LastName) && text.includes(p2LastName)) {
-          const m = $(el).attr('href')?.match(/id=(\d+)/);
-          if (m) sidebarId = m[1];
-        }
-      });
-      if (sidebarId) return sidebarId;
+    for (const pt of ['results', 'schedule']) {
+      urls.push(`https://www.tennisexplorer.com/${pt}/?type=${type}&year=${year}&month=${month}&day=${day}`);
     }
   }
-  return null;
+
+  const results = await Promise.all(
+    urls.map(url => searchPageForMatch(url, p1LastName, p2LastName))
+  );
+  return results.find(id => id != null) || null;
 }
 
 async function scrapeH2H(matchId) {
