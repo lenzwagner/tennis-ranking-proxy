@@ -280,6 +280,109 @@ app.get('/api/sync/all', async (req, res) => {
   }
 });
 
+// ── Grand Slam performance timeline (Wikipedia) ───────────────────────────────
+// GET /api/grandslam?player=Taylor+Fritz
+const gsCache = new Map();
+const GS_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24h
+
+const SLAM_MAP = {
+  'australian open': 'AO',
+  'french open': 'FO',
+  'wimbledon': 'WIM',
+  'us open': 'USO',
+};
+
+// Resolve a player name to a Wikipedia article title (handles disambiguation
+// like "Taylor Fritz (tennis)"). Falls back to the underscore slug on failure.
+async function resolveWikiTitle(name) {
+  try {
+    const url = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(name + ' tennis')}&limit=1&namespace=0&format=json`;
+    const res = await axios.get(url, { headers: HEADERS, timeout: 8000 });
+    const title = res.data?.[1]?.[0];
+    if (title) return title.replace(/ /g, '_');
+  } catch (e) { /* fall through */ }
+  return name.trim().replace(/\s+/g, '_');
+}
+
+async function scrapeGrandSlam(name) {
+  const title = await resolveWikiTitle(name);
+  const url = `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`;
+  const html = await fetchHtml(url, { timeout: 10000 });
+  const $ = cheerio.load(html);
+
+  // Find the table that contains a row labelled with a Grand Slam tournament.
+  let gsTable = null;
+  $('table.wikitable').each((_, tbl) => {
+    if (gsTable) return;
+    const txt = $(tbl).text().toLowerCase();
+    if (txt.includes('australian open') && txt.includes('wimbledon') && txt.includes('us open')) {
+      gsTable = $(tbl);
+    }
+  });
+  if (!gsTable) return { player: name, results: {} };
+
+  // Find the header row of years: the first row whose cells are mostly 4-digit years.
+  let years = [];
+  let yearRowCells = 0;
+  gsTable.find('tr').each((_, tr) => {
+    if (years.length) return;
+    const cells = $(tr).find('th, td');
+    const found = [];
+    cells.each((i, c) => {
+      const t = $(c).text().trim();
+      if (/^(19|20)\d{2}$/.test(t)) found.push({ year: t });
+    });
+    if (found.length >= 3) {
+      years = found.map(f => f.year);
+      yearRowCells = cells.length;
+    }
+  });
+  if (!years.length) return { player: name, results: {} };
+
+  const results = {};
+  years.forEach(y => { results[y] = {}; });
+
+  gsTable.find('tr').each((_, tr) => {
+    const cells = $(tr).find('th, td');
+    if (cells.length < 2) return;
+    const label = $(cells[0]).text().trim().toLowerCase().replace(/\s+/g, ' ');
+    const slamCode = SLAM_MAP[label];
+    if (!slamCode) return;
+
+    // Year result cells start at index 1; align left-to-right with the years list.
+    years.forEach((y, idx) => {
+      const cell = cells[idx + 1];
+      if (!cell) return;
+      let v = $(cell).text().trim().replace(/\s+/g, '');
+      // Normalize: blank/A/absent → skip; keep round codes (W, F, SF, QF, 4R…)
+      if (!v || v === 'A' || v === 'N/A' || v === 'NH' || v === '–' || v === '—') return;
+      // Strip footnote markers like "QF[1]"
+      v = v.replace(/\[.*$/, '');
+      if (v) results[y][slamCode] = v;
+    });
+  });
+
+  return { player: name, results };
+}
+
+app.get('/api/grandslam', async (req, res) => {
+  try {
+    const { player } = req.query;
+    if (!player) return res.status(400).json({ success: false, error: 'player required' });
+    const key = `gs:${player.toLowerCase()}`;
+    const hit = gsCache.get(key);
+    if (hit && Date.now() - hit.ts < GS_CACHE_DURATION) {
+      return res.json({ success: true, data: hit.data, cached: true });
+    }
+    const data = await scrapeGrandSlam(player);
+    gsCache.set(key, { ts: Date.now(), data });
+    res.json({ success: true, data, cached: false });
+  } catch (e) {
+    console.error('GrandSlam error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── AI Predictions (external JSON, cached 30min) ──────────────────────────────
 const PREDICTIONS_URL = 'https://raw.githubusercontent.com/lenzwagner/prediction_tennis/main/predictions_latest.json';
 const predictionsCache = { data: null, ts: 0 };
