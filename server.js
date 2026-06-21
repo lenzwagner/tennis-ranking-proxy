@@ -280,6 +280,26 @@ app.get('/api/sync/all', async (req, res) => {
   }
 });
 
+// ── AI Predictions (external JSON, cached 30min) ──────────────────────────────
+const PREDICTIONS_URL = 'https://raw.githubusercontent.com/lenzwagner/prediction_tennis/main/predictions_latest.json';
+const predictionsCache = { data: null, ts: 0 };
+const PREDICTIONS_TTL = 30 * 60 * 1000;
+
+app.get('/api/predictions', async (req, res) => {
+  try {
+    if (predictionsCache.data && Date.now() - predictionsCache.ts < PREDICTIONS_TTL) {
+      return res.json({ success: true, data: predictionsCache.data, cached: true });
+    }
+    const resp = await axios.get(PREDICTIONS_URL, { timeout: 10000 });
+    predictionsCache.data = resp.data;
+    predictionsCache.ts = Date.now();
+    res.json({ success: true, data: resp.data, cached: false });
+  } catch (e) {
+    console.error('Predictions fetch error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // H2H lookup
 // GET /api/h2h?p1=Taylor+Fritz&p2=Frances+Tiafoe&date=2026-06-20&tour=atp
 const h2hCache = new Map();
