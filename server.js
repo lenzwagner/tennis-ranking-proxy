@@ -408,131 +408,48 @@ app.get('/api/predictions', async (req, res) => {
 const h2hCache = new Map();
 const H2H_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24h
 
-function lastNameOf(fullName) {
-  // "Taylor Fritz" → "Fritz", "Stefanos Tsitsipas" → "Tsitsipas"
-  const parts = fullName.trim().split(/\s+/);
-  return parts[parts.length - 1].toLowerCase();
+// "Taylor Fritz" → "fritz-t", "Alexander Zverev" → "zverev-a"
+function toSlug(fullName) {
+  const parts = fullName.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts[0] || '';
+  const last = parts[parts.length - 1].replace(/[^a-z]/g, '');
+  const first = parts[0][0];
+  return `${last}-${first}`;
 }
 
-// Search a single tennisexplorer page for a match between p1/p2; returns matchId or null
-async function searchPageForMatch(url, p1LastName, p2LastName) {
-  let html;
-  try {
-    html = await fetchHtml(url, { timeout: 8000, jinaExtraMs: 10000 });
-  } catch {
-    return null;
-  }
+function parseH2HFromHtml(html) {
   const $ = cheerio.load(html);
 
-  const hasName = (text, lastName) => text.includes(lastName);
-
-  // Main match table rows (results page: tr.fRow; schedule page: tr.sked or similar)
-  for (const rowSel of ['tr.fRow', 'tr.sked', 'tr[id]']) {
-    for (const primaryRow of $(rowSel).toArray()) {
-      const row1 = $(primaryRow);
-      const rowId = row1.attr('id');
-      if (rowId && rowId.endsWith('b')) continue; // skip second-player rows
-      const row2 = rowId ? $(`#${rowId}b`) : $();
-      // Extract name from link first, fall back to full cell text
-      const name1 = (row1.find('td.t-name a').first().text() || row1.find('td.t-name').first().text()).trim().toLowerCase();
-      const name2 = (row2.find('td.t-name a').first().text() || row2.find('td.t-name').first().text()).trim().toLowerCase();
-      if (!name1 && !name2) continue;
-      if ([name1, name2].some(n => hasName(n, p1LastName)) &&
-          [name1, name2].some(n => hasName(n, p2LastName))) {
-        const link = row1.find('a[href*="match-detail"]').attr('href')
-          || row2.find('a[href*="match-detail"]').attr('href');
-        const m = link?.match(/id=(\d+)/);
-        if (m) return m[1];
-      }
-    }
-  }
-
-  // Broader scan: find any match-detail link whose surrounding row contains both last names.
-  // This catches any page layout regardless of CSS class structure.
-  let broadId = null;
-  $('a[href*="match-detail"]').each((_, el) => {
-    if (broadId) return;
-    const m = $(el).attr('href')?.match(/id=(\d+)/);
-    if (!m) return;
-    // Check anchor text + full parent row text
-    const rowText = ($(el).closest('tr').text() + ' ' + $(el).text()).toLowerCase();
-    if (hasName(rowText, p1LastName) && hasName(rowText, p2LastName)) {
-      broadId = m[1];
-    }
-  });
-  return broadId;
-}
-
-async function findMatchDetailId(p1LastName, p2LastName, dateStr, tourType) {
-  const type = tourType.toLowerCase() === 'wta' ? 'wta-women' : 'atp-men';
-  const baseDate = new Date(dateStr + 'T12:00:00Z');
-
-  // Build all 6 URLs (3 days × 2 page types) and fetch ALL in parallel.
-  // Return the first non-null result; total time = slowest single request (~18s max).
-  const urls = [];
-  for (const dayOffset of [0, -1, 1]) {
-    const d = new Date(baseDate);
-    d.setUTCDate(d.getUTCDate() + dayOffset);
-    const year = d.getUTCFullYear();
-    const month = d.getUTCMonth() + 1;
-    const day = d.getUTCDate();
-    for (const pt of ['results', 'schedule']) {
-      urls.push(`https://www.tennisexplorer.com/${pt}/?type=${type}&year=${year}&month=${month}&day=${day}`);
-    }
-  }
-
-  const results = await Promise.all(
-    urls.map(url => searchPageForMatch(url, p1LastName, p2LastName))
-  );
-  return results.find(id => id != null) || null;
-}
-
-async function scrapeH2H(matchId) {
-  const url = `https://www.tennisexplorer.com/match-detail/?id=${matchId}`;
-  const html = await fetchHtml(url);
-  const $ = cheerio.load(html);
-
-  // Overall H2H score from heading: "Head-to-head: 7 - 2"
   const headingText = $('h2.bg').filter((_, el) => $(el).text().includes('Head-to-head')).first().text();
   const overallMatch = headingText.match(/Head-to-head:\s*(\d+)\s*-\s*(\d+)/i);
   const overallP1 = overallMatch ? parseInt(overallMatch[1]) : 0;
   const overallP2 = overallMatch ? parseInt(overallMatch[2]) : 0;
 
-  // Find the H2H table by its heading
   const h2hHeading = $('h2.bg').filter((_, el) => $(el).text().includes('Head-to-head')).first();
   const h2hTable = h2hHeading.next().find('table.result').first();
 
   let p1Name = null, p2Name = null;
   const matches = [];
-
   const tbodyRows = h2hTable.find('tbody tr').toArray();
   let i = 0;
   while (i < tbodyRows.length) {
     const row1 = $(tbodyRows[i]);
     const row2 = tbodyRows[i + 1] ? $(tbodyRows[i + 1]) : null;
-
     const year = row1.find('td.annual').text().trim() || '';
     const tournament = row1.find('td.tl a').text().trim() || '';
     const surface = row1.find('td.sColorLong span').attr('title') || '';
     const round = row1.find('td.round').text().trim() || '';
-
     const player1Name = row1.find('td.t-name').text().trim();
     const player1Sets = parseInt(row1.find('td.result').text().trim()) || 0;
     const p1Scores = row1.find('td.score').map((_, s) => $(s).text().trim().replace(/\D+/g, '') || null).toArray().filter(Boolean);
-
     const player2Name = row2 ? row2.find('td.t-name').text().trim() : '';
     const player2Sets = row2 ? parseInt(row2.find('td.result').text().trim()) || 0 : 0;
     const p2Scores = row2 ? row2.find('td.score').map((_, s) => $(s).text().trim().replace(/\D+/g, '') || null).toArray().filter(Boolean) : [];
-
     if (!p1Name && player1Name) p1Name = player1Name;
     if (!p2Name && player2Name) p2Name = player2Name;
-
     if (year || tournament) {
       matches.push({
-        year: year || null,
-        tournament,
-        surface,
-        round,
+        year: year || null, tournament, surface, round,
         winner: player1Sets > player2Sets ? 'p1' : 'p2',
         player1: { name: player1Name, sets: player1Sets, scores: p1Scores },
         player2: { name: player2Name, sets: player2Sets, scores: p2Scores },
@@ -540,13 +457,76 @@ async function scrapeH2H(matchId) {
     }
     i += 2;
   }
+  return { overall: { p1: overallP1, p2: overallP2 }, player1: p1Name, player2: p2Name, matches };
+}
 
-  return {
-    overall: { p1: overallP1, p2: overallP2 },
-    player1: p1Name,
-    player2: p2Name,
-    matches,
+// Primary: direct H2H URL — no match-ID lookup needed, much faster.
+// tennisexplorer.com/head-to-head/{slug1}/{slug2}/
+async function fetchH2HDirect(p1Name, p2Name) {
+  const slug1 = toSlug(p1Name);
+  const slug2 = toSlug(p2Name);
+  const attempts = [
+    { url: `https://www.tennisexplorer.com/head-to-head/${slug1}/${slug2}/`, swapped: false },
+    { url: `https://www.tennisexplorer.com/head-to-head/${slug2}/${slug1}/`, swapped: true },
+  ];
+  for (const { url, swapped } of attempts) {
+    try {
+      const html = await fetchHtml(url, { timeout: 10000, jinaExtraMs: 12000 });
+      const $ = cheerio.load(html);
+      if (!$('h2.bg').text().includes('Head-to-head')) continue;
+      let data = parseH2HFromHtml(html);
+      if (swapped) {
+        data = {
+          overall: { p1: data.overall.p2, p2: data.overall.p1 },
+          player1: data.player2, player2: data.player1,
+          matches: data.matches.map(m => ({
+            ...m,
+            winner: m.winner === 'p1' ? 'p2' : 'p1',
+            player1: m.player2, player2: m.player1,
+          })),
+        };
+      }
+      return data;
+    } catch { continue; }
+  }
+  return null;
+}
+
+// Fallback: find matchId from today's schedule/results, then scrape H2H from match page.
+async function fetchH2HViaMatchId(p1Name, p2Name, dateStr, tourType) {
+  const p1Last = p1Name.trim().split(/\s+/).pop().toLowerCase();
+  const p2Last = p2Name.trim().split(/\s+/).pop().toLowerCase();
+  const type = tourType.toLowerCase() === 'wta' ? 'wta-women' : 'atp-men';
+  const baseDate = new Date(dateStr + 'T12:00:00Z');
+  const urls = [];
+  for (const dayOffset of [0, -1, 1]) {
+    const d = new Date(baseDate);
+    d.setUTCDate(d.getUTCDate() + dayOffset);
+    for (const pt of ['results', 'schedule']) {
+      urls.push(`https://www.tennisexplorer.com/${pt}/?type=${type}&year=${d.getUTCFullYear()}&month=${d.getUTCMonth()+1}&day=${d.getUTCDate()}`);
+    }
+  }
+  const searchPage = async (url) => {
+    try {
+      const html = await fetchHtml(url, { timeout: 8000, jinaExtraMs: 10000 });
+      const $ = cheerio.load(html);
+      let found = null;
+      $('a[href*="match-detail"]').each((_, el) => {
+        if (found) return;
+        const rowText = ($(el).closest('tr').text() + ' ' + $(el).text()).toLowerCase();
+        if (rowText.includes(p1Last) && rowText.includes(p2Last)) {
+          const m = $(el).attr('href')?.match(/id=(\d+)/);
+          if (m) found = m[1];
+        }
+      });
+      return found;
+    } catch { return null; }
   };
+  const ids = await Promise.all(urls.map(searchPage));
+  const matchId = ids.find(id => id != null);
+  if (!matchId) return null;
+  const html = await fetchHtml(`https://www.tennisexplorer.com/match-detail/?id=${matchId}`);
+  return parseH2HFromHtml(html);
 }
 
 app.get('/api/h2h', async (req, res) => {
@@ -560,15 +540,12 @@ app.get('/api/h2h', async (req, res) => {
     if (cached && Date.now() - cached.ts < H2H_CACHE_DURATION) {
       return res.json({ success: true, data: cached.data });
     }
-
-    const p1Last = lastNameOf(p1);
-    const p2Last = lastNameOf(p2);
-    const matchId = await findMatchDetailId(p1Last, p2Last, date, tour || 'atp');
-    if (!matchId) {
-      return res.status(404).json({ success: false, error: `Match not found for ${p1} vs ${p2} on ${date}` });
+    // Try direct H2H URL first (fast), fall back to match-ID schedule scrape
+    let data = await fetchH2HDirect(p1, p2);
+    if (!data) data = await fetchH2HViaMatchId(p1, p2, date, tour || 'atp');
+    if (!data) {
+      return res.status(404).json({ success: false, error: `H2H not found for ${p1} vs ${p2}` });
     }
-
-    const data = await scrapeH2H(matchId);
     h2hCache.set(cacheKey, { ts: Date.now(), data });
     res.json({ success: true, data });
   } catch (e) {
