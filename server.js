@@ -447,29 +447,20 @@ async function searchPageForMatch(url, p1LastName, p2LastName) {
     }
   }
 
-  // Broader scan: any match-detail link whose anchor text contains both last names
+  // Broader scan: find any match-detail link whose surrounding row contains both last names.
+  // This catches any page layout regardless of CSS class structure.
   let broadId = null;
   $('a[href*="match-detail"]').each((_, el) => {
     if (broadId) return;
-    const text = $(el).text().toLowerCase();
-    if (hasName(text, p1LastName) && hasName(text, p2LastName)) {
-      const m = $(el).attr('href')?.match(/id=(\d+)/);
-      if (m) broadId = m[1];
+    const m = $(el).attr('href')?.match(/id=(\d+)/);
+    if (!m) return;
+    // Check anchor text + full parent row text
+    const rowText = ($(el).closest('tr').text() + ' ' + $(el).text()).toLowerCase();
+    if (hasName(rowText, p1LastName) && hasName(rowText, p2LastName)) {
+      broadId = m[1];
     }
   });
-  if (broadId) return broadId;
-
-  // Sidebar "interesting matches"
-  let sidebarId = null;
-  $('td.game a[href*="match-detail"]').each((_, el) => {
-    if (sidebarId) return;
-    const text = $(el).text().toLowerCase();
-    if (hasName(text, p1LastName) && hasName(text, p2LastName)) {
-      const m = $(el).attr('href')?.match(/id=(\d+)/);
-      if (m) sidebarId = m[1];
-    }
-  });
-  return sidebarId;
+  return broadId;
 }
 
 async function findMatchDetailId(p1LastName, p2LastName, dateStr, tourType) {
