@@ -424,28 +424,47 @@ async function searchPageForMatch(url, p1LastName, p2LastName) {
   }
   const $ = cheerio.load(html);
 
-  // Main match table rows
-  for (const primaryRow of $('tr.fRow').toArray()) {
-    const row1 = $(primaryRow);
-    const rowId = row1.attr('id');
-    const row2 = rowId ? $(`#${rowId}b`) : $();
-    const name1 = row1.find('td.t-name a').first().text().trim().toLowerCase();
-    const name2 = row2.find('td.t-name a').first().text().trim().toLowerCase();
-    if ([name1, name2].some(n => n.startsWith(p1LastName)) &&
-        [name1, name2].some(n => n.startsWith(p2LastName))) {
-      const link = row1.find('a[href*="match-detail"]').attr('href')
-        || row2.find('a[href*="match-detail"]').attr('href');
-      const m = link?.match(/id=(\d+)/);
-      if (m) return m[1];
+  const hasName = (text, lastName) => text.includes(lastName);
+
+  // Main match table rows (results page: tr.fRow; schedule page: tr.sked or similar)
+  for (const rowSel of ['tr.fRow', 'tr.sked', 'tr[id]']) {
+    for (const primaryRow of $(rowSel).toArray()) {
+      const row1 = $(primaryRow);
+      const rowId = row1.attr('id');
+      if (rowId && rowId.endsWith('b')) continue; // skip second-player rows
+      const row2 = rowId ? $(`#${rowId}b`) : $();
+      // Extract name from link first, fall back to full cell text
+      const name1 = (row1.find('td.t-name a').first().text() || row1.find('td.t-name').first().text()).trim().toLowerCase();
+      const name2 = (row2.find('td.t-name a').first().text() || row2.find('td.t-name').first().text()).trim().toLowerCase();
+      if (!name1 && !name2) continue;
+      if ([name1, name2].some(n => hasName(n, p1LastName)) &&
+          [name1, name2].some(n => hasName(n, p2LastName))) {
+        const link = row1.find('a[href*="match-detail"]').attr('href')
+          || row2.find('a[href*="match-detail"]').attr('href');
+        const m = link?.match(/id=(\d+)/);
+        if (m) return m[1];
+      }
     }
   }
+
+  // Broader scan: any match-detail link whose anchor text contains both last names
+  let broadId = null;
+  $('a[href*="match-detail"]').each((_, el) => {
+    if (broadId) return;
+    const text = $(el).text().toLowerCase();
+    if (hasName(text, p1LastName) && hasName(text, p2LastName)) {
+      const m = $(el).attr('href')?.match(/id=(\d+)/);
+      if (m) broadId = m[1];
+    }
+  });
+  if (broadId) return broadId;
 
   // Sidebar "interesting matches"
   let sidebarId = null;
   $('td.game a[href*="match-detail"]').each((_, el) => {
     if (sidebarId) return;
     const text = $(el).text().toLowerCase();
-    if (text.includes(p1LastName) && text.includes(p2LastName)) {
+    if (hasName(text, p1LastName) && hasName(text, p2LastName)) {
       const m = $(el).attr('href')?.match(/id=(\d+)/);
       if (m) sidebarId = m[1];
     }
@@ -580,3 +599,4 @@ app.listen(PORT, () => {
   console.log('  GET /api/prize/atp');
   console.log('  GET /api/prize/wta');
 });
+
