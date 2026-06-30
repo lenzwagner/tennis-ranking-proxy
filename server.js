@@ -554,13 +554,22 @@ app.get('/api/h2h', async (req, res) => {
   }
 });
 
-// Debug: fetch a URL and return status + first 1500 chars of body
+// Debug: fetch a URL and return status + optionally search for terms
 app.get('/api/debug-fetch', async (req, res) => {
-  const { url } = req.query;
+  const { url, search } = req.query;
   if (!url) return res.status(400).json({ error: 'url param required' });
   try {
     const html = await fetchHtml(url, { timeout: 10000, jinaExtraMs: 12000 });
-    res.json({ length: html.length, preview: html.substring(0, 1500) });
+    const result = { length: html.length, preview: html.substring(0, 1500) };
+    if (search) {
+      const terms = search.split(',').map(s => s.trim().toLowerCase());
+      result.searchResults = {};
+      for (const term of terms) {
+        const idx = html.toLowerCase().indexOf(term);
+        result.searchResults[term] = idx === -1 ? 'NOT FOUND' : html.substring(Math.max(0, idx - 100), idx + 300);
+      }
+    }
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
