@@ -554,6 +554,18 @@ app.get('/api/h2h', async (req, res) => {
   }
 });
 
+// Debug: fetch a URL and return status + first 1500 chars of body
+app.get('/api/debug-fetch', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'url param required' });
+  try {
+    const html = await fetchHtml(url, { timeout: 10000, jinaExtraMs: 12000 });
+    res.json({ length: html.length, preview: html.substring(0, 1500) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Tennis Ranking Proxy on port ${PORT}`);
