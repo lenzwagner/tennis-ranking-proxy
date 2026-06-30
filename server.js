@@ -492,13 +492,27 @@ async function fetchH2HDirect(p1Name, p2Name) {
   return null;
 }
 
+// Grand Slam tournament pages (not included in /results/ or /schedule/ ATP pages).
+function grandSlamUrls(dateStr, tourType) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const month = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  const year = d.getUTCFullYear();
+  const suffix = tourType.toLowerCase() === 'wta' ? 'wta-women' : 'atp-men';
+  if (month === 1 && day >= 10 && day <= 30) return [`https://www.tennisexplorer.com/australian-open/${year}/${suffix}/`];
+  if ((month === 5 && day >= 20) || (month === 6 && day <= 12)) return [`https://www.tennisexplorer.com/roland-garros/${year}/${suffix}/`];
+  if ((month === 6 && day >= 26) || (month === 7 && day <= 16)) return [`https://www.tennisexplorer.com/wimbledon/${year}/${suffix}/`];
+  if ((month === 8 && day >= 23) || (month === 9 && day <= 10)) return [`https://www.tennisexplorer.com/us-open/${year}/${suffix}/`];
+  return [];
+}
+
 // Fallback: find matchId from today's schedule/results, then scrape H2H from match page.
 async function fetchH2HViaMatchId(p1Name, p2Name, dateStr, tourType) {
   const p1Last = p1Name.trim().split(/\s+/).pop().toLowerCase();
   const p2Last = p2Name.trim().split(/\s+/).pop().toLowerCase();
   const type = tourType.toLowerCase() === 'wta' ? 'wta-women' : 'atp-men';
   const baseDate = new Date(dateStr + 'T12:00:00Z');
-  const urls = [];
+  const urls = [...grandSlamUrls(dateStr, tourType)];
   for (const dayOffset of [0, -1, 1]) {
     const d = new Date(baseDate);
     d.setUTCDate(d.getUTCDate() + dayOffset);
