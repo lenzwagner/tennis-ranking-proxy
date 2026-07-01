@@ -412,7 +412,8 @@ const H2H_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24h
 function toSlug(fullName) {
   const parts = fullName.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (parts.length < 2) return parts[0] || '';
-  const last = parts[parts.length - 1].replace(/[^a-z]/g, '');
+  // Keep hyphens in last name (e.g. "auger-aliassime"), strip other non-alpha chars
+  const last = parts[parts.length - 1].replace(/[^a-z-]/g, '');
   const first = parts[0][0];
   return `${last}-${first}`;
 }
