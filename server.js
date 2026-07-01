@@ -458,13 +458,9 @@ function parseH2HFromHtml(html) {
     }
     i += 2;
   }
-  // overall from heading can be inconsistent with table row order (heading order = match page order,
-  // table row order = winner-first). Recompute from table; fall back to heading if table is empty.
-  const p1Wins = matches.filter(m => m.winner === 'p1').length;
-  const p2Wins = matches.filter(m => m.winner === 'p2').length;
-  const overall = matches.length > 0
-    ? { p1: p1Wins, p2: p2Wins }
-    : { p1: overallP1, p2: overallP2 };
+  // tennisexplorer always puts the winner first in each row pair, so recomputing from table
+  // always gives p1Wins=total, p2Wins=0. Trust the heading values instead.
+  const overall = { p1: overallP1, p2: overallP2 };
 
   return { overall, player1: p1Name, player2: p2Name, matches };
 }
