@@ -458,9 +458,15 @@ function parseH2HFromHtml(html) {
     }
     i += 2;
   }
-  // tennisexplorer always puts the winner first in each row pair, so recomputing from table
-  // always gives p1Wins=total, p2Wins=0. Trust the heading values instead.
-  const overall = { p1: overallP1, p2: overallP2 };
+  // Heading order = page h1 title (e.g. "Tsitsipas - Djokovic" → p1=Tsitsipas).
+  // Table p1Name = first player name found = usually the player who appears as winner first.
+  // If heading p1 ≠ table p1, swap the overall counts so they match the table player order.
+  const pageP1 = $('h1.bg').first().text().split(/\s*-\s*/)[0]?.trim().toLowerCase() || '';
+  const tableP1Lower = (p1Name || '').toLowerCase();
+  const headingSwapped = pageP1 && tableP1Lower && !tableP1Lower.includes(pageP1.split(' ')[0]) && !pageP1.includes(tableP1Lower.split(' ')[0]);
+  const overall = headingSwapped
+    ? { p1: overallP2, p2: overallP1 }
+    : { p1: overallP1, p2: overallP2 };
 
   return { overall, player1: p1Name, player2: p2Name, matches };
 }
