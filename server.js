@@ -566,7 +566,7 @@ app.get('/api/h2h', async (req, res) => {
     let data = await fetchH2HDirect(p1, p2);
     if (!data) data = await fetchH2HViaMatchId(p1, p2, date, tour || 'atp');
     if (!data) {
-      return res.status(404).json({ success: false, error: `H2H not found for ${p1} vs ${p2}` });
+      return res.json({ success: false, error: `H2H not found for ${p1} vs ${p2}` });
     }
     h2hCache.set(cacheKey, { ts: Date.now(), data });
     res.json({ success: true, data });
