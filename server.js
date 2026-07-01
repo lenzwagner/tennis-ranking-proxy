@@ -478,11 +478,12 @@ async function fetchH2HDirect(p1Name, p2Name) {
     { url: `https://www.tennisexplorer.com/head-to-head/${slug1}/${slug2}/`, swapped: false },
     { url: `https://www.tennisexplorer.com/head-to-head/${slug2}/${slug1}/`, swapped: true },
   ];
-  for (const { url, swapped } of attempts) {
+  // Fetch both URLs in parallel — halves latency vs sequential
+  const results = await Promise.all(attempts.map(async ({ url, swapped }) => {
     try {
-      const html = await fetchHtml(url, { timeout: 10000, jinaExtraMs: 12000 });
+      const html = await fetchHtml(url, { timeout: 7000, jinaExtraMs: 8000 });
       const $ = cheerio.load(html);
-      if (!$('h2.bg').text().includes('Head-to-head')) continue;
+      if (!$('h2.bg').text().includes('Head-to-head')) return null;
       let data = parseH2HFromHtml(html);
       if (swapped) {
         data = {
@@ -496,9 +497,9 @@ async function fetchH2HDirect(p1Name, p2Name) {
         };
       }
       return data;
-    } catch { continue; }
-  }
-  return null;
+    } catch { return null; }
+  }));
+  return results.find(r => r != null) || null;
 }
 
 // Grand Slam tournament pages (not included in /results/ or /schedule/ ATP pages).
@@ -548,7 +549,7 @@ async function fetchH2HViaMatchId(p1Name, p2Name, dateStr, tourType) {
   const ids = await Promise.all(urls.map(searchPage));
   const matchId = ids.find(id => id != null);
   if (!matchId) return null;
-  const html = await fetchHtml(`https://www.tennisexplorer.com/match-detail/?id=${matchId}`);
+  const html = await fetchHtml(`https://www.tennisexplorer.com/match-detail/?id=${matchId}`, { timeout: 7000, jinaExtraMs: 8000 });
   return parseH2HFromHtml(html);
 }
 
@@ -564,8 +565,17 @@ app.get('/api/h2h', async (req, res) => {
       return res.json({ success: true, data: cached.data });
     }
     // Try direct H2H URL first (fast), fall back to match-ID schedule scrape
-    let data = await fetchH2HDirect(p1, p2);
-    if (!data) data = await fetchH2HViaMatchId(p1, p2, date, tour || 'atp');
+    const H2H_BUDGET_MS = 25000;
+    let data = await Promise.race([
+      fetchH2HDirect(p1, p2),
+      new Promise(resolve => setTimeout(() => resolve(null), H2H_BUDGET_MS))
+    ]);
+    if (!data) {
+      data = await Promise.race([
+        fetchH2HViaMatchId(p1, p2, date, tour || 'atp'),
+        new Promise(resolve => setTimeout(() => resolve(null), H2H_BUDGET_MS))
+      ]);
+    }
     if (!data) {
       return res.json({ success: false, error: `H2H not found for ${p1} vs ${p2}` });
     }
